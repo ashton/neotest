@@ -6,6 +6,8 @@ local config = require("neotest.config")
 ---@class neotest.consumers.watch.Watcher
 ---@field lsp_client nio.lsp.Client
 ---@field autocmd_id? string
+---@field tree neotest.Tree
+---@field discover_positions_event nio.control.Future
 local Watcher = {}
 
 function Watcher:new(lsp_client)
@@ -63,7 +65,10 @@ function Watcher:_get_linked_files(path, root_path, args)
     end
 
     for _, def in ipairs(defs or {}) do
-      dependency_uris[def.uri or def.targetUri] = true
+      local index = def.uri or def.targetUri
+      if index then
+        dependency_uris[def.uri or def.targetUri] = true
+      end
     end
   end
   local paths = { path }
@@ -77,7 +82,7 @@ function Watcher:_get_linked_files(path, root_path, args)
   return paths
 end
 
----@class neotest.consumers.watch.watcher.WatchArgs
+---@class neotest.consumers.watch.watcher.WatchArgs: neotest.watch.WatchArgs
 ---@field filter_path fun(root: string, path: string): boolean
 
 ---@paam tree neotest.Tree
@@ -143,6 +148,8 @@ function Watcher:_build_dependants(dependencies)
   return dependants
 end
 
+---@param tree neotest.Tree
+---@param args neotest.consumers.watch.watcher.WatchArgs
 function Watcher:watch(tree, args)
   local run = require("neotest").run
   local paths = self:_files_in_tree(tree)
@@ -154,8 +161,14 @@ function Watcher:watch(tree, args)
   logger.debug("Built dependencies in", elapsed, "ms for", tree:data().id, ":", dependencies)
   local dependants = self:_build_dependants(dependencies)
 
+  self.tree = tree
+  self.discover_positions_event = nio.control.future()
+
   self.autocmd_id = nio.api.nvim_create_autocmd("BufWritePost", {
     callback = function(autocmd_args)
+      if type(args.run_predicate) == "function" and not args.run_predicate(autocmd_args.buf) then
+        return
+      end
       nio.run(function()
         local path = nio.fn.expand(nio.api.nvim_buf_get_name(autocmd_args.buf), ":p")
 
@@ -163,6 +176,9 @@ function Watcher:watch(tree, args)
         if not buf_dependants then
           return
         end
+
+        self.discover_positions_event.wait()
+        self.discover_positions_event = nio.control.future()
 
         if tree:data().type ~= "dir" then
           run.run(vim.tbl_extend("keep", { tree:data().id }, args))

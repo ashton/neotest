@@ -22,7 +22,7 @@ neotest.lib.process = {}
 --- outputs. Use vim.jobstart instead.
 ---@async
 ---@param command string[]
----@param args neotest.lib.process.RunArgs
+---@param args? neotest.lib.process.RunArgs
 ---@return integer,neotest.lib.process.RunResult Exit code and table containing stdout/stderr keys if requested
 function neotest.lib.process.run(command, args)
   args = args or {}
@@ -40,9 +40,6 @@ function neotest.lib.process.run(command, args)
   if not handle then
     error(pid)
   end
-
-  local result_code = exit_future.wait()
-  handle:close()
 
   local stdout_data, stderr_data
   if args.stdout then
@@ -71,6 +68,9 @@ function neotest.lib.process.run(command, args)
     end)
     read_future.wait()
   end
+
+  local result_code = exit_future.wait()
+  handle:close()
 
   stdin:close()
   stdout:close()

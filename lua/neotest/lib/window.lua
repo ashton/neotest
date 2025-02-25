@@ -61,14 +61,25 @@ function PersistentWindow:open()
 end
 
 function PersistentWindow:buffer()
-  if self._bufnr then
+  if
+    self._bufnr
+    and nio.api.nvim_buf_is_valid(self._bufnr)
+    and nio.api.nvim_buf_is_loaded(self._bufnr)
+  then
     return self._bufnr
   end
+
+  for _, bufnr in ipairs(nio.api.nvim_list_bufs()) do
+    if nio.api.nvim_buf_get_name(bufnr):find(self.name, 1, true) then
+      nio.api.nvim_buf_delete(bufnr, { force = true })
+    end
+  end
+
   self._bufnr = nio.api.nvim_create_buf(false, true)
   nio.api.nvim_buf_set_name(self._bufnr, self.name)
   for k, v in pairs(self._bufopts) do
     if k ~= "filetype" then
-      nio.api.nvim_buf_set_option(self._bufnr, k, v)
+      nio.api.nvim_set_option_value(k, v, { buf = self._bufnr })
     end
   end
   return self._bufnr

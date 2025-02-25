@@ -80,19 +80,17 @@ function neotest.Client:run_tree(tree, args)
     return
   end
   self._state:update_running(adapter_id, root.id, pos_ids)
-  local success, all_results = pcall(
-    self._runner.run_tree,
-    self._runner,
-    tree,
-    args,
-    adapter_id,
-    adapter,
-    function(results)
+  local errmsg = ""
+  local success, all_results = xpcall(function()
+    return self._runner.run_tree(self._runner, tree, args, adapter_id, adapter, function(results)
       self._state:update_results(adapter_id, results, true)
-    end
-  )
+    end)
+  end, function(err)
+    errmsg = debug.traceback(err, 1)
+  end)
+
   if not success then
-    lib.notify(("%s: %s"):format(adapter.name, all_results), "warn")
+    lib.notify(("%s: %s"):format(adapter.name, errmsg), "warn")
     all_results = {}
     for _, pos in tree:iter() do
       all_results[pos.id] = { status = "skipped" }
@@ -392,8 +390,12 @@ function neotest.Client:_start(args)
     })
   end
 
-  autocmd({ "BufAdd", "BufWritePost" }, function()
-    local file_path = vim.fn.expand("<afile>:p")
+  autocmd({ "BufAdd", "BufWritePost" }, function(ev)
+    if ev.file == "" then
+      return
+    end
+
+    local file_path = vim.fn.fnamemodify(ev.file, ":p")
 
     if not lib.files.exists(file_path) then
       return
@@ -448,8 +450,11 @@ function neotest.Client:_start(args)
     end)
   end)
 
-  autocmd({ "BufAdd", "BufDelete" }, function()
-    local updated_dir = vim.fn.expand("<afile>:p:h")
+  autocmd({ "BufAdd", "BufDelete" }, function(ev)
+    if ev.file == "" then
+      return
+    end
+    local updated_dir = vim.fn.fnamemodify(ev.file, ":p:h")
     nio.run(function()
       local adapter_id = self:_get_adapter(updated_dir, nil)
       if not adapter_id then
@@ -462,8 +467,11 @@ function neotest.Client:_start(args)
     end)
   end)
 
-  autocmd("BufEnter", function()
-    local path = vim.fn.expand("<afile>:p")
+  autocmd("BufEnter", function(ev)
+    if ev.file == "" then
+      return
+    end
+    local path = vim.fn.fnamemodify(ev.file, ":p")
 
     if not lib.files.exists(path) then
       return
@@ -475,7 +483,10 @@ function neotest.Client:_start(args)
   end)
 
   autocmd({ "CursorHold", "BufEnter" }, function()
-    local path, line = vim.fn.expand("<afile>:p"), vim.fn.line(".")
+    if vim.fn.expand("%") == "" then
+      return
+    end
+    local path, line = vim.fn.expand("%:p"), vim.fn.line(".")
 
     if not lib.files.exists(path) then
       return

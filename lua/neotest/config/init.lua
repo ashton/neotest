@@ -1,4 +1,3 @@
-local lib = require("neotest.lib")
 ---@tag neotest.config
 ---@toc_entry Configuration Options
 
@@ -28,6 +27,20 @@ local augroup = vim.api.nvim_create_augroup("NeotestColorSchemeRefresh", {})
 vim.api.nvim_create_autocmd("ColorScheme", { callback = define_highlights, group = augroup })
 define_highlights()
 
+local js_watch_query = [[
+  ;query
+  ;Captures named imports
+  (import_specifier name: (identifier) @symbol)
+  ;Captures default import
+  (import_clause (identifier) @symbol)
+  ;Capture require statements
+  (variable_declarator 
+  name: (identifier) @symbol
+  value: (call_expression (identifier) @function  (#eq? @function "require")))
+  ;Capture namespace imports
+  (namespace_import (identifier) @symbol)
+]]
+
 ---@class neotest.CoreConfig
 ---@field adapters neotest.Adapter[]
 ---@field discovery neotest.Config.discovery
@@ -41,6 +54,7 @@ define_highlights()
 ---@field highlights table<string, string>
 ---@field floating neotest.Config.floating
 ---@field strategies neotest.Config.strategies
+---@field run neotest.Config.run
 ---@field summary neotest.Config.summary
 ---@field output neotest.Config.output
 ---@field output_panel neotest.Config.output_panel
@@ -74,6 +88,10 @@ define_highlights()
 ---@class neotest.Config.strategies
 ---@field integrated neotest.Config.strategies.integrated
 
+---@class neotest.Config.run
+---@field enabled boolean
+---@field augment? fun(tree: neotest.Tree, arg: neotest.run.RunArgs):neotest.run.RunArgs A function to augment the arguments any tests being run
+
 ---@class neotest.Config.summary
 ---@field enabled boolean
 ---@field animated boolean Enable/disable animation of icons
@@ -81,6 +99,7 @@ define_highlights()
 ---@field expand_errors boolean Expand all failed positions
 ---@field mappings neotest.Config.summary.mappings Buffer mappings for summary window
 ---@field open string | fun(): integer A command or function to open a window for the summary
+---@field count boolean Display number of tests found beside the adapter name
 
 ---@class neotest.Config.summary.mappings
 ---@field expand string|string[] Expand currently selected position
@@ -175,6 +194,7 @@ local default_config = {
     child_indent = "│",
     final_child_indent = " ",
     watching = "",
+    notify = "",
   },
   highlights = {
     passed = "NeotestPassed",
@@ -211,6 +231,7 @@ local default_config = {
   },
   summary = {
     enabled = true,
+    count = true,
     animated = true,
     follow = true,
     expand_errors = true,
@@ -234,6 +255,7 @@ local default_config = {
       next_failed = "J",
       prev_failed = "K",
       watch = "w",
+      help = "?",
     },
   },
   benchmark = {
@@ -273,6 +295,9 @@ local default_config = {
   watch = {
     enabled = true,
     symbol_queries = {
+      typescript = js_watch_query,
+      javascript = js_watch_query,
+      tsx = js_watch_query,
       python = [[
         ;query
         ;Captures imports and modules they're imported from
@@ -298,6 +323,7 @@ local default_config = {
           arguments: (arguments (string) @symbol))
       ]],
       elixir = function(root, content)
+        local lib = require("neotest.lib")
         local query = lib.treesitter.normalise_query(
           "elixir",
           [[;; query
@@ -309,7 +335,7 @@ local default_config = {
           ]]
         )
         local symbols = {}
-        for _, match, metadata in query:iter_matches(root, content) do
+        for _, match, metadata in query:iter_matches(root, content, nil, nil, { all = false }) do
           for id, node in pairs(match) do
             local name = query.captures[id]
 
@@ -326,6 +352,73 @@ local default_config = {
         end
         return symbols
       end,
+      ruby = [[
+        ;query
+        ;rspec - class name
+        (call
+          method: (identifier) @_ (#match? @_ "^(describe|context)")
+          arguments: (argument_list (constant) @symbol )
+        )
+
+        ;rspec - namespaced class name
+        (call
+          method: (identifier)
+          arguments: (argument_list
+            (scope_resolution
+              name: (constant) @symbol))
+        )
+      ]],
+      rust = [[
+        ;query
+        ;submodule import
+        (mod_item
+          name: (identifier) @symbol)
+        ;single import
+        (use_declaration
+          argument: (scoped_identifier
+            name: (identifier) @symbol))
+        ;import list
+        (use_declaration
+          argument: (scoped_use_list
+            list: (use_list
+                [(scoped_identifier
+                   path: (identifier)
+                   name: (identifier) @symbol)
+                 ((identifier) @symbol)])))
+        ;wildcard import
+        (use_declaration
+          argument: (scoped_use_list
+            path: (identifier)
+            [(use_list
+              [(scoped_identifier
+                path: (identifier)
+                name: (identifier) @symbol)
+                ((identifier) @symbol)
+              ])]))
+      ]],
+      swift = [[
+        ;query
+        ;import
+        (simple_identifier) @symbol
+      ]],
+      haskell = [[
+        ;query
+        ;explicit import
+        ((import_item [(variable)]) @symbol)
+        ;symbols that may be imported implicitly
+        ((type) @symbol)
+        (qualified_variable (variable) @symbol)
+        (exp_apply (exp_name (variable) @symbol))
+        ((constructor) @symbol)
+        ((operator) @symbol)
+      ]],
+      java = [[
+        ;query
+        ;captures imported classes
+        (import_declaration
+            (scoped_identifier name: ((identifier) @symbol))
+        )
+      ]],
     },
     filter_path = nil,
   },
@@ -340,7 +433,9 @@ local NeotestConfigModule = {}
 
 local convert_concurrent = function(val)
   if val == 0 or val == true then
-    return #vim.loop.cpu_info() + 4
+    -- Hack for Android devices, where cpu_info() returns nil
+    local cpu_info = vim.loop.cpu_info() or {}
+    return #cpu_info + 4
   end
   if val == false then
     return 1

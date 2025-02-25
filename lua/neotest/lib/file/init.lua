@@ -4,6 +4,7 @@ local nio = require("nio")
 local filetype = require("plenary.filetype")
 local fu = require("neotest.lib.func_util")
 local types = require("neotest.types")
+local utils = require("neotest.utils")
 local Tree = types.Tree
 
 local neotest = { lib = {} }
@@ -230,8 +231,9 @@ neotest.lib.files.path = {
   sep = neotest.lib.files.sep,
   exists = neotest.lib.files.exists,
   real = function(path)
-    local err, real = nio.uv.fs_realpath(path)
-    return real, err
+    local normalized_path = nio.fn.fnamemodify(path, ":p")
+    local exists = neotest.lib.files.exists(normalized_path)
+    return exists and normalized_path or nil, exists
   end,
 }
 
@@ -353,7 +355,7 @@ end
 ---@param ... string Patterns to match e.g "*.py"
 ---@return fun(path: string): string | nil
 function neotest.lib.files.match_root_pattern(...)
-  local patterns = vim.tbl_flatten({ ... })
+  local patterns = utils.tbl_flatten({ ... })
   return function(start_path)
     local start_parents = Path:new(start_path):parents()
     local home = os.getenv("HOME")

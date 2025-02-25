@@ -13,24 +13,26 @@ return function(spec)
   local env, cwd = spec.env, spec.cwd
 
   local finish_future = nio.control.future()
+  local output_finish_future = nio.control.future()
   local result_code = nil
   local command = spec.command
-  local data_accum = FanoutAccum(function(prev, new)
+  local output_accum = FanoutAccum(function(prev, new)
     if not prev then
       return new
     end
     return prev .. new
   end, nil)
 
-  local attach_win, attach_buf, attach_chan
+  local attach_win, attach_buf, attach_chan, attach_unsubscribe
   local output_path = nio.fn.tempname()
   local open_err, output_fd = nio.uv.fs_open(output_path, "w", 438)
   assert(not open_err, open_err)
 
-  data_accum:subscribe(nio.create(function(data)
-    local write_err, _ = nio.uv.fs_write(output_fd, data)
-    assert(not write_err, write_err)
-  end, 1))
+  output_accum:subscribe(function(data)
+    vim.loop.fs_write(output_fd, data, nil, function(write_err)
+      assert(not write_err, write_err)
+    end)
+  end)
 
   local success, job = pcall(nio.fn.jobstart, command, {
     cwd = cwd,
@@ -39,7 +41,11 @@ return function(spec)
     height = spec.strategy.height,
     width = spec.strategy.width,
     on_stdout = function(_, data)
-      data_accum:push(table.concat(data, "\n"))
+      if #data == 1 and data[1] == "" then
+        output_finish_future.set()
+        return
+      end
+      output_accum:push(table.concat(data, "\n"))
     end,
     on_exit = function(_, code)
       result_code = code
@@ -64,11 +70,11 @@ return function(spec)
     end,
     output_stream = function()
       local queue = nio.control.queue()
-      data_accum:subscribe(function(d)
+      output_accum:subscribe(function(d)
         queue.put_nowait(d)
       end)
       return function()
-        local data = nio.first({ queue.get, finish_future.wait })
+        local data = nio.first({ queue.get, output_finish_future.wait })
         if data then
           return data
         end
@@ -85,13 +91,20 @@ return function(spec)
       end
 
       if nio.fn.bufexists(attach_buf) == 0 then
+        if attach_chan then
+          pcall(nio.fn.chanclose, attach_chan)
+        end
+        if attach_unsubscribe then
+          attach_unsubscribe()
+        end
         attach_buf = nio.api.nvim_create_buf(false, true)
         attach_chan = lib.ui.open_term(attach_buf, {
           on_input = function(_, _, _, data)
             pcall(nio.api.nvim_chan_send, job, data)
           end,
         })
-        data_accum:subscribe(function(data)
+
+        attach_unsubscribe = output_accum:subscribe(function(data)
           pcall(nio.api.nvim_chan_send, attach_chan, data)
         end)
       end
@@ -106,7 +119,17 @@ return function(spec)
     end,
     result = function()
       if result_code == nil then
-        finish_future:wait()
+        finish_future.wait()
+        if not output_finish_future.is_set() then
+          -- jobstart doesn't necessarily call on_stdout if the process
+          -- stops quickly, so add a timeout to prevent deadlock
+          nio.first({
+            output_finish_future.wait,
+            function()
+              nio.sleep(100)
+            end,
+          })
+        end
       end
       local close_err = nio.uv.fs_close(output_fd)
       assert(not close_err, close_err)

@@ -55,6 +55,9 @@ local function init(client)
     logger.debug("Setting diagnostics for", self.file_path, diagnostics)
 
     vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(self.bufnr) then
+        return
+      end
       diag.set(diag_namespace, self.bufnr, diagnostics)
     end)
   end
@@ -78,29 +81,39 @@ local function init(client)
       local pos_id = position.id
       local result = results[pos_id]
       if position.type == "test" and result and result.errors and #result.errors > 0 then
+        local pos_by_id = positions:get_key(pos_id)
+        local default_line = pos_by_id and pos_by_id:closest_value_for("range")[1]
         local placed = self.tracking_marks[pos_id]
-          or self:init_mark(
-            pos_id,
-            result.errors,
-            positions:get_key(pos_id):closest_value_for("range")[1]
-          )
+          or self:init_mark(pos_id, result.errors, default_line)
         if placed then
           for error_i, error in pairs(result.errors or {}) do
-            local mark = api.nvim_buf_get_extmark_by_id(
+            local success, mark = pcall(
+              api.nvim_buf_get_extmark_by_id,
               bufnr,
               tracking_namespace,
               self.tracking_marks[pos_id][error_i],
               {}
             )
+            if not success then
+              logger.error("Invalid extmark id", self.tracking_marks[pos_id], error_i, mark)
+              mark = nil
+            end
 
             -- After closing the buf, the mark[1] becomes nil
             if mark and #mark > 0 then
               local mark_code = api.nvim_buf_get_lines(bufnr, mark[1], mark[1] + 1, false)[1]
 
               if mark_code == self.error_code_lines[pos_id][error_i] then
+                local col = mark_code:find("%S")
+                if col then
+                  col = col - 1
+                else
+                  col = 0
+                end
+
                 diagnostics[#diagnostics + 1] = {
                   lnum = mark[1],
-                  col = mark_code:find("%S") - 1,
+                  col = col,
                   message = error.message,
                   source = "neotest",
                   severity = config.diagnostic.severity,
@@ -127,7 +140,7 @@ local function init(client)
         0,
         { end_line = line }
       )
-      if not success then
+      if not success or type(mark_id) ~= "number" then
         logger.error("Failed to place mark for buf", self.bufnr, mark_id)
         return false
       end
